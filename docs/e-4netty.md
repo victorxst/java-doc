@@ -102,7 +102,7 @@ public interface ChannelFuture extends Future<Void> {
 
 ### 5.4.5 EventloopGroup 了解么?和 EventLoop 啥关系?
 
-![](https://guide-blog-images.oss-cn-shenzhen.aliyuncs.com/2020-8/2a5a4a71-cfb7-4735-bf5c-6a57007c82ec.png)
+![](../pictures/2a5a4a71-cfb7-4735-bf5c-6a57007c82ec.png)
 
 `EventLoopGroup` 包含多个 `EventLoop`（每一个 `EventLoop` 通常内部包含一个线程），上面我们已经说了 `EventLoop` 的主要作用实际就是负责监听网络事件并调用事件处理器进行相关 I/O 操作的处理。
 
