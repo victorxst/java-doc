@@ -39,23 +39,20 @@ Netty 主要用来做**网络通信** :
 
 `Channel` 接口是 Netty 对网络操作抽象类，它除了包括基本的 I/O 操作，如 `bind()`、`connect()`、`read()`、`write()` 等。
 
-比较常用的`Channel`接口实现类是`NioServerSocketChannel`（服务端）和`NioSocketChannel`（客户端），这两个 `Channel` 可以和 BIO 编程模型中的`ServerSocket`以及`Socket`两个概念对应上。Netty 的 `Channel` 接口所提供的 API，大大地降低了直接使用 Socket 类的复杂性。
+比较常用的`Channel`接口实现类是`NioServerSocketChannel`（服务端）和`NioSocketChannel`（客户端），这两个 `Channel` 可以和 BIO 编程模型中的`ServerSocket`以及`Socket`两个概念对应上。
 
-#### 2.EventLoop
+#### 2.NioEventLoop
 
-这么说吧！`EventLoop`（事件循环）接口可以说是 Netty 中最核心的概念了！
+NioEventLoop中维护了一个线程和任务队列，支持异步提交执行任务，线程启动时会调用NioEventLoop的run方法，执行I/O任务和非I/O任务：
 
-《Netty 实战》这本书是这样介绍它的：
+- I/O任务 即selectionKey中ready的事件，如accept、connect、read、write等，由processSelectedKeys方法触发。
+- 非IO任务 添加到taskQueue中的任务，如register0、bind0等任务，由runAllTasks方法触发。
 
-> `EventLoop` 定义了 Netty 的核心抽象，用于处理连接的生命周期中所发生的事件。
+两种任务的执行时间比由变量ioRatio控制，默认为50，则表示允许非IO任务执行的时间与IO任务的执行时间相等。
 
-是不是很难理解？说实话，我学习 Netty 的时候看到这句话是没太能理解的。
+#### 5.NioEventLoopGroup
 
-说白了，**`EventLoop` 的主要作用实际就是负责监听网络事件并调用事件处理器进行相关 I/O 操作的处理。**
-
-那 `Channel` 和 `EventLoop` 直接有啥联系呢？
-
-`Channel` 为 Netty 网络操作(读写等操作)抽象类，`EventLoop` 负责处理注册到其上的`Channel` 处理 I/O 操作，两者配合参与 I/O 操作。
+NioEventLoopGroup，主要管理eventLoop的生命周期，可以理解为一个线程池，内部维护了一组线程，每个线程(NioEventLoop)负责处理多个Channel上的事件，而一个Channel只对应于一个线程。
 
 #### 3.ChannelFuture
 
@@ -78,90 +75,91 @@ public interface ChannelFuture extends Future<Void> {
 
 另外，我们还可以通过 `ChannelFuture` 接口的 `sync()`方法让异步的操作变成同步的。
 
-#### 4.ChannelHandler 和 ChannelPipeline
+#### 4.ChannelHandler
 
-下面这段代码使用过 Netty 的小伙伴应该不会陌生，我们指定了序列化编解码器以及自定义的 `ChannelHandler` 处理消息。
+ChannelHandler是一个接口，处理I / O事件或拦截I / O操作，并将其转发到其ChannelPipeline(业务处理链)中的下一个处理程序。
 
-```java
-        b.group(eventLoopGroup)
-                .handler(new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel ch) {
-                        ch.pipeline().addLast(new NettyKryoDecoder(kryoSerializer, RpcResponse.class));
-                        ch.pipeline().addLast(new NettyKryoEncoder(kryoSerializer, RpcRequest.class));
-                        ch.pipeline().addLast(new KryoClientHandler());
-                    }
-                });
-```
+ChannelHandler本身并没有提供很多方法，因为这个接口有许多的方法需要实现，方便使用期间，可以继承它的子类：
 
-`ChannelHandler` 是消息的具体处理器。他负责处理读写操作、客户端连接等事情。
+- ChannelInboundHandler用于处理入站I / O事件
+- ChannelOutboundHandler用于处理出站I / O操作
 
-`ChannelPipeline` 为 `ChannelHandler` 的链，提供了一个容器并定义了用于沿着链传播入站和出站事件流的 API 。当 `Channel` 被创建时，它会被自动地分配到它专属的 `ChannelPipeline`。
+或者使用以下适配器类：
 
-我们可以在 `ChannelPipeline` 上通过 `addLast()` 方法添加一个或者多个`ChannelHandler` ，因为一个数据或者事件可能会被多个 Handler 处理。当一个 `ChannelHandler` 处理完之后就将数据交给下一个 `ChannelHandler` 。
+- ChannelInboundHandlerAdapter用于处理入站I / O事件
+- ChannelOutboundHandlerAdapter用于处理出站I / O操作
+- ChannelDuplexHandler用于处理入站和出站事件
 
-### 5.4.5 EventloopGroup 了解么?和 EventLoop 啥关系?
+#### 5.ChannelPipline
 
-![](../pictures/2a5a4a71-cfb7-4735-bf5c-6a57007c82ec.png)
+保存ChannelHandler的List，用于处理或拦截Channel的入站事件和出站操作。 ChannelPipeline实现了一种高级形式的拦截过滤器模式，使用户可以完全控制事件的处理方式，以及Channel中各个的ChannelHandler如何相互交互。
 
-`EventLoopGroup` 包含多个 `EventLoop`（每一个 `EventLoop` 通常内部包含一个线程），上面我们已经说了 `EventLoop` 的主要作用实际就是负责监听网络事件并调用事件处理器进行相关 I/O 操作的处理。
+![](../pictures/360截图1657123070105110.png)
 
-并且 `EventLoop` 处理的 I/O 事件都将在它专有的 `Thread` 上被处理，即 `Thread` 和 `EventLoop` 属于 1 : 1 的关系，从而保证线程安全。
+入站事件由自下而上方向的入站处理程序处理。 入站Handler处理程序通常处理由图底部的I / O线程生成的入站数据。 通常通过实际输入操作（例如SocketChannel.read（ByteBuffer））从远程读取入站数据。
 
-上图是一个服务端对 `EventLoopGroup` 使用的大致模块图，其中 `Boss EventloopGroup` 用于接收连接，`Worker EventloopGroup` 用于具体的处理（消息的读写以及其他逻辑处理）。
+出站事件由上下方向处理。 出站Handler处理程序通常会生成或转换出站传输，例如write请求。 I/O线程通常执行实际的输出操作，例如SocketChannel.write（ByteBuffer）。
 
-从上图可以看出： 当客户端通过 `connect` 方法连接服务端时，`bossGroup` 处理客户端连接请求。当客户端处理完成后，会将这个连接提交给 `workerGroup` 来处理，然后 `workerGroup` 负责处理其 IO 相关操作。
+在 Netty 中每个 Channel 都有且仅有一个 ChannelPipeline 与之对应, 它们的组成关系如下
 
-### 5.4.6 Bootstrap 和 ServerBootstrap 了解么？
+![](../pictures/aHR0cHM6Ly91c2VyLWdvbGQtY2RuLnhpdHUuaW8vMjAxOC8xMS8xLzE2NmNjYmJkYzhjZDFhMmY.png)
+
+一个 Channel 包含了一个 ChannelPipeline, 而 ChannelPipeline 中又维护了一个由 ChannelHandlerContext 组成的双向链表, 并且每个 ChannelHandlerContext 中又关联着一个 ChannelHandler。入站事件和出站事件在一个双向链表中，入站事件会从链表head往后传递到最后一个入站的handler，出站事件会从链表tail往前传递到最前一个出站的handler，两种类型的handler互不干扰。
+
+#### 6 Bootstrap 和 ServerBootstrap 
+
+Bootstrap意思是引导，一个Netty应用通常由一个Bootstrap开始，主要作用是配置整个Netty程序，串联各个组件，Netty中Bootstrap类是客户端程序的启动引导类，ServerBootstrap是服务端启动引导类。
 
 `Bootstrap` 是客户端的启动引导类/辅助类，具体使用方法如下：
 
 ```java
-        EventLoopGroup group = new NioEventLoopGroup();
-        try {
-            //创建客户端启动引导/辅助类：Bootstrap
-            Bootstrap b = new Bootstrap();
-            //指定线程模型
-            b.group(group).
-                    ......
-            // 尝试建立连接
-            ChannelFuture f = b.connect(host, port).sync();
-            f.channel().closeFuture().sync();
-        } finally {
-            // 优雅关闭相关线程组资源
-            group.shutdownGracefully();
-        }
+EventLoopGroup group = new NioEventLoopGroup();
+try {
+    //创建客户端启动引导/辅助类：Bootstrap
+    Bootstrap b = new Bootstrap();
+    //指定线程模型
+    b.group(group).
+        ......
+        // 尝试建立连接
+        ChannelFuture f = b.connect(host, port).sync();
+    f.channel().closeFuture().sync();
+} finally {
+    // 优雅关闭相关线程组资源
+    group.shutdownGracefully();
+}
 ```
 
 `ServerBootstrap` 服务端的启动引导类/辅助类，具体使用方法如下：
 
 ```java
-        // 1.bossGroup 用于接收连接，workerGroup 用于具体的处理
-        EventLoopGroup bossGroup = new NioEventLoopGroup(1);
-        EventLoopGroup workerGroup = new NioEventLoopGroup();
-        try {
-            //2.创建服务端启动引导/辅助类：ServerBootstrap
-            ServerBootstrap b = new ServerBootstrap();
-            //3.给引导类配置两大线程组,确定了线程模型
-            b.group(bossGroup, workerGroup).
-                   ......
-            // 6.绑定端口
-            ChannelFuture f = b.bind(port).sync();
-            // 等待连接关闭
-            f.channel().closeFuture().sync();
-        } finally {
-            //7.优雅关闭相关线程组资源
-            bossGroup.shutdownGracefully();
-            workerGroup.shutdownGracefully();
-        }
-    }
+// 1.bossGroup 用于接收连接，workerGroup 用于具体的处理
+EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+EventLoopGroup workerGroup = new NioEventLoopGroup();
+try {
+    //2.创建服务端启动引导/辅助类：ServerBootstrap
+    ServerBootstrap b = new ServerBootstrap();
+    //3.给引导类配置两大线程组,确定了线程模型
+    b.group(bossGroup, workerGroup).
+        ......
+        // 6.绑定端口
+        ChannelFuture f = b.bind(port).sync();
+    // 等待连接关闭
+    f.channel().closeFuture().sync();
+} finally {
+    //7.优雅关闭相关线程组资源
+    bossGroup.shutdownGracefully();
+    workerGroup.shutdownGracefully();
+}
+}
 ```
 
-从上面的示例中，我们可以看出：
+#### 7 Selector
 
-1. `Bootstrap` 通常使用 `connet()` 方法连接到远程的主机和端口，作为一个 Netty TCP 协议通信中的客户端。另外，`Bootstrap` 也可以通过 `bind()` 方法绑定本地的一个端口，作为 UDP 协议通信中的一端。
-2. `ServerBootstrap`通常使用 `bind()` 方法绑定本地的端口上，然后等待客户端的连接。
-3. `Bootstrap` 只需要配置一个线程组— `EventLoopGroup` ,而 `ServerBootstrap`需要配置两个线程组— `EventLoopGroup` ，一个用于接收连接，一个用于具体的处理。
+Netty基于Selector对象实现I/O多路复用，通过 Selector, 一个线程可以监听多个连接的Channel事件, 当向一个Selector中注册Channel 后，Selector 内部的机制就可以自动不断地查询(select) 这些注册的Channel是否有已就绪的I/O事件(例如可读, 可写, 网络连接完成等)，这样程序就可以很简单地使用一个线程高效地管理多个 Channel 。
+
+#### 8.ChannelHandlerContext
+
+保存Channel相关的所有上下文信息，同时关联一个ChannelHandler对象
 
 ### 5.4.7 NioEventLoopGroup 默认的构造函数会起多少线程？
 
@@ -491,19 +489,41 @@ TCP 实际上自带的就有长连接选项，本身是也有心跳包机制，�
 
 ### 5.4.12 Netty 的零拷贝了解么？
 
-维基百科是这样介绍零拷贝的：
+https://www.cnblogs.com/200911/articles/10432551.html
 
-> 零复制（英语：Zero-copy；也译零拷贝）技术是指计算机执行操作时，CPU 不需要先将数据从某处内存复制到另一个特定区域。这种技术通常用于通过网络传输文件时节省 CPU 周期和内存带宽。
+零拷贝的应用程序要求内核（kernel）直接将数据从磁盘文件拷贝到套接字（Socket），而无须通过应用程序。零拷贝不仅提高了应用程序的性能，而且减少了内核和用户模式见上下文切换。
 
-在 OS 层面上的 `Zero-copy` 通常指避免在 `用户态(User-space)` 与 `内核态(Kernel-space)` 之间来回拷贝数据。而在 Netty 层面 ，零拷贝主要体现在对于数据操作的优化。
+**传统方法**
 
-Netty 中的零拷贝体现在以下几个方面
+![](../pictures/167213-20180626182656662-1723722762.png)
 
-1. 使用 Netty 提供的 `CompositeByteBuf` 类, 可以将多个`ByteBuf` 合并为一个逻辑上的 `ByteBuf`, 避免了各个 `ByteBuf` 之间的拷贝。
-2. `ByteBuf` 支持 slice 操作, 因此可以将 ByteBuf 分解为多个共享同一个存储区域的 `ByteBuf`, 避免了内存的拷贝。
-3. 通过 `FileRegion` 包装的`FileChannel.tranferTo` 实现文件传输, 可以直接将文件缓冲区的数据发送到目标 `Channel`, 避免了传统通过循环 write 方式导致的内存拷贝问题.
+![](../pictures/167213-20180703153135997-476874108.png)
 
-### 5.4.13BIO、NIO和AIO的区别
+从图中可以看出文件经历了4次copy过程:
+
+1、首先通过DMA将数据从磁盘读取到kernel buffer中
+
+2、再将kernel buffer中的数据拷贝到user buffer中
+
+3、然后将user buffer中的数据拷贝到socket buffer中
+
+4、最后将socket buffer中的数据拷贝到网卡设备中
+
+**零拷贝**
+
+JDK NIO中的的**transferTo()**方法就能够让您实现这个操作，这个实现依赖于操作系统底层的**sendFile()**实现的。
+
+![](../pictures/167213-20180703165126930-217245674.png)
+
+数据只经过了两次拷贝。处理过程：
+
+1、将磁盘数据拷贝到kernel buffer中
+
+2、向socket buffer中追加当前要发生的数据在kernel buffer中的位置和偏移量
+
+3、根据socket buffer中的位置和偏移量直接将kernel buffer的数据拷贝到网卡设备中
+
+### 5.4.13 BIO、NIO和AIO的区别
 
 IO的方式通常分为几种，**同步阻塞的BIO**、**同步非阻塞的NIO**、**异步非阻塞的AIO**。
 
@@ -546,3 +566,49 @@ BIO方式适用于连接数目比较小且固定的架构，这种方式对服�
 NIO方式适用于连接数目多且连接比较短（轻操作）的架构，比如聊天服务器，并发局限于应用中，编程比较复杂，JDK1.4开始支持。
 
 AIO方式适用于连接数目多且连接比较长（重操作）的架构，比如相册服务器，充分调用OS参与并发操作，编程比较复杂，JDK7开始支持。
+
+### 5.4.14 NIO的组成
+
+核心部分：Channels：通道；Buffers：缓冲区；Selectors：选择器。
+
+**Channel**:
+
+实现有：FileChannel、SocketChannel、ServerSocketChannel、DatagramChannel
+
+使用：
+
+读数据：int bytesRead = inChannel.read(buf);
+
+写数据：int bytesWritten = inChannel.write(buf); 
+
+**Buffer**:
+
+实现有：ByteBuffer、CharBuffer、DoubleBuffer、FloatBuffer、IntBuffer、LongBuffer、ShortBuffer
+
+使用：
+
+读数据：buf.flip();  (char) buf.get();
+
+flip():将Buffer从写模式切换到读模式 调用flip()方法会将position设回0，并将limit设置成之前position的值。
+
+读取数据：buf.rewind()
+
+清空缓冲区:
+
+写数据：buf.put(127); 
+
+**Selector**：
+
+Selector允许单线程处理多个 Channel。如果你的应用打开了多个连接（通道），但每个连接的流量都很低，使用Selector就会很方便。例如，在一个聊天服务器中。 要使用Selector，得向Selector注册Channel，然后调用它的select()方法。这个方法会一直阻塞到某个注册的通道有事件就绪。一旦这个方法返回，线程就可以处理这些事件，例如新连接进来，数据接收等。
+
+NIO的服务端建立过程：Selector.open()：打开一个Selector；ServerSocketChannel.open()：创建服务端的Channel；bind()：绑定到某个端口上。并配置非阻塞模式；register()：注册Channel和关注的事件到Selector上；select()轮询拿到已经就绪的事件
+
+### 5.4.15 Netty的功能特性
+
+![](../pictures/aHR0cHM6Ly91c2VyLWdvbGQtY2RuLnhpdHUuaW8vMjAxOC8xMS8xLzE2NmNjYmJkYzg2MTRjOGY.png)
+
+- 传输服务 支持BIO和NIO
+- 容器集成 支持OSGI、JBossMC、Spring、Guice容器
+- 协议支持 HTTP、Protobuf、二进制、文本、WebSocket等一系列常见协议都支持。 还支持通过实行编码解码逻辑来实现自定义协议
+- Core核心 可扩展事件模型、通用通信API、支持零拷贝的ByteBuf缓冲对象
+  
